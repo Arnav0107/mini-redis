@@ -1,3 +1,7 @@
+mod parser;
+use bytes::Buf;
+use bytes::BytesMut; // NEW
+use std::io; // NEW
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // AsyncReadExt
@@ -50,13 +54,34 @@ async fn main() -> std::io::Result<()> {
 }
 
 async fn handle(mut socket: TcpStream) -> std::io::Result<()> {
-    let mut buf = [0u8; 1024]; //This creates an array containing
+    let mut buf = BytesMut::with_capacity(4096); //This creates an array containing
+                                                 // loop {
+                                                 //     let n = socket.read(&mut buf).await?;
+                                                 //     //Read data from the client and put it into buf.
+                                                 //     if n == 0 {
+                                                 //         return Ok(());
+                                                 //     }
+                                                 //     socket.write_all(b"+PONG\r\n").await?;
+                                                 // }
     loop {
-        let n = socket.read(&mut buf).await?;
-        //Read data from the client and put it into buf.
-        if n == 0 {
-            return Ok(());
+        // 1. Drain every complete command currently in the buffer
+        while let Some(args) =
+            parser::parse(&mut buf).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?
+        {
+            // 2. Dispatch on the command name
+            match args[0].to_uppercase().as_str() {
+                "PING" => socket.write_all(b"+PONG\r\n").await?,
+                "ECHO" if args.len() > 1 => {
+                    let reply = format!("${}\r\n{}\r\n", args[1].len(), args[1]);
+                    socket.write_all(reply.as_bytes()).await?;
+                }
+                _ => socket.write_all(b"-ERR unknown command\r\n").await?,
+            }
         }
-        socket.write_all(b"+PONG\r\n").await?;
+
+        // 3. Need more bytes: read into buf (appends, doesn't overwrite)
+        if socket.read_buf(&mut buf).await? == 0 {
+            return Ok(()); // client closed
+        }
     }
 }
